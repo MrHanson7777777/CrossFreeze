@@ -84,7 +84,7 @@ class CrossFreezeClient:
                  lr_decay_step=20, lr_decay_gamma=0.5, mu=0.01,
                  total_epochs=50, cutmix_alpha=1.0, cutmix_prob=0.8,
                  cutmix_min_ratio=0.1, cutmix_max_ratio=0.8, use_cutmix=True,
-                 mixup_cutmix_ratio=0.5, consistency_beta=5.0, min_lr=1e-5, gamma_sm=1.0):
+                 mixup_cutmix_ratio=0.5, consistency_beta=5.0, min_lr=1e-5, gamma_sm=1.0, gamma_scheduler='static', args=None):
         self.client_id = client_id
         self.dataset_name = dataset_name
         self.model = copy.deepcopy(model).to(device)
@@ -112,6 +112,8 @@ class CrossFreezeClient:
         # 【新增】学习率和损失权重参数
         self.min_lr = min_lr
         self.gamma_sm = gamma_sm  # 保存 gamma_sm 参数
+        self.gamma_scheduler = gamma_scheduler  # 【新增】保存调度策略
+        self.args = args  # 【新增】保存args参数以访问separate_loss
         
         # 损失函数 (标签平滑)
         self.criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
@@ -218,18 +220,17 @@ class CrossFreezeClient:
         total_loss = 0.0
         num_batches = 0
         
-        # 动态调整 gamma_sm 权重
-        # 【新增】Tiny-ImageNet 专用逻辑
-        if 'tiny_imagenet' in self.dataset_name.lower():
-            # IID 场景下，Sm 在初期是混乱的，绝对不能信！
-            # 只有当训练到后期，特征空间趋于稳定，才能给一点点权重
+        # 【修改】通用动态权重逻辑
+        if self.gamma_scheduler == 'dynamic':
+            # Dynamic Soft Warm-up 策略 (Exp E)
+            # 前20轮仅关注本地个性化，后期逐渐引入全局约束
             if round_idx is not None and round_idx < 20:
-                gamma_sm = 0.0  # 前20轮完全不看全局，只做本地训练
+                current_gamma_sm = 0.0
             else:
-                gamma_sm = 0.1  # 后期也只给极小的权重
+                current_gamma_sm = self.gamma_sm  # 恢复到配置的权重 (通常较小，如0.1)
         else:
-            # 其他数据集使用配置参数中的 gamma_sm
-            gamma_sm = self.gamma_sm
+            # Static 策略 (Exp B, C, D)
+            current_gamma_sm = self.gamma_sm
         
         for epoch in range(self.local_epochs):
             for data, target in self.train_loader:
@@ -277,8 +278,10 @@ class CrossFreezeClient:
                 loss_sm = mixup_criterion(self.criterion, output_sm, targets_a, targets_b, lam)
 
                 # 3. 统一目标函数 (Unified Objective)
+                # S1阶段分离损失：只使用M2损失时，将gamma_sm设为0
+                real_gamma_sm = 0.0 if self.args.separate_loss else current_gamma_sm
                 # Total Loss = L_task(M2) + gamma * L_anchor(Sm) + beta * L_cons
-                loss = loss_m2 + gamma_sm * loss_sm + self.consistency_beta * loss_cons
+                loss = loss_m2 + real_gamma_sm * loss_sm + self.consistency_beta * loss_cons
                 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.m1.parameters(), max_norm=1.0)
@@ -345,23 +348,19 @@ class CrossFreezeClient:
         # 【修改】确保权重与 train_s1 一致
         # 确保这里使用的权重与 S1 完全一致
         # S1 中 loss_m2 的系数是 1.0
-        gamma_m2 = 1.0  # 确保与 S1 一致
+        # Even阶段分离损失：只使用Sm损失时，将gamma_m2设为0
+        gamma_m2 = 0.0 if self.args.separate_loss else 1.0
         
-        # 【新增】动态调整权重 - 添加 Tiny-ImageNet 专用逻辑
-        if 'tiny_imagenet' in self.dataset_name.lower():
-            # 偶数轮本意是用 Global Sm 纠正 M1
-            # 但在 Tiny-ImageNet IID 上，Global Sm 质量很差
-            # 我们主要依靠 M2 (本地头) 来训练 M1，Sm 仅作为极弱的辅助
-            gamma_sm = 0.1
-            # gamma_m2 = 1.0  # 已在上面设置，保持一致
-        elif 'cifar' in self.dataset_name.lower():
-            # CIFAR策略: 强对齐全局(Sm)，弱化本地偏见(M2)
-            gamma_sm = 1.0
-            # 注意：这里不再修改 gamma_m2，保持为 1.0 与 S1 一致
+        # 【修改】通用动态权重逻辑
+        if self.gamma_scheduler == 'dynamic':
+            # Dynamic 策略初期不看全局
+            if round_idx is not None and round_idx < 20:
+                current_gamma_sm = 0.0  # 动态策略初期不看全局
+            else:
+                current_gamma_sm = self.gamma_sm  # 静态策略或动态策略后期
         else:
-            # PathMNIST 等差异大的数据集保留原有逻辑
-            gamma_sm = 1.0
-            # gamma_m2 = 0.5  # 改为 1.0 保持一致 
+            # Static 策略
+            current_gamma_sm = self.gamma_sm 
         
         for epoch in range(self.local_epochs):
             for data, target in self.train_loader:
@@ -398,7 +397,7 @@ class CrossFreezeClient:
                 loss_sm = mixup_criterion(self.criterion, output_sm, targets_a, targets_b, lam)
                 loss_m2 = mixup_criterion(self.criterion, output_m2, targets_a, targets_b, lam)
 
-                loss = gamma_sm * loss_sm + gamma_m2 * loss_m2 + self.consistency_beta * loss_cons
+                loss = current_gamma_sm * loss_sm + gamma_m2 * loss_m2 + self.consistency_beta * loss_cons
                 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.m1.parameters(), max_norm=1.0)
@@ -479,6 +478,43 @@ class CrossFreezeClient:
         accuracy = 100. * correct / total if total > 0 else 0
         return accuracy
 
+    def evaluate_per_class_accuracy(self, num_classes, use_sm=False):
+        """评估每个类别的准确率"""
+        self.model.eval()
+        class_correct = torch.zeros(num_classes)
+        class_total = torch.zeros(num_classes)
+        
+        with torch.no_grad():
+            for data, target in self.test_loader:
+                data, target = data.to(self.device, non_blocking=True), target.to(self.device, non_blocking=True)
+                if target.dim() > 1: target = target.squeeze().long()
+                else: target = target.long()
+                
+                if use_sm:
+                    output = self.model(data, head='sm')
+                else:
+                    output = self.model(data, head='m2')
+                    
+                pred = output.argmax(dim=1)
+                
+                for i in range(len(target)):
+                    label = target[i].item()
+                    if label < num_classes:
+                        class_total[label] += 1
+                        if pred[i] == label:
+                            class_correct[label] += 1
+        
+        # 计算每个类别的准确率
+        per_class_acc = []
+        for i in range(num_classes):
+            if class_total[i] > 0:
+                acc = (class_correct[i] / class_total[i] * 100).item()
+            else:
+                acc = 0.0
+            per_class_acc.append(acc)
+        
+        return per_class_acc
+
 class ClientManager:
     """客户端管理器"""
     def __init__(self, dataset_name, num_clients, model, client_loaders, test_loader,
@@ -487,7 +523,7 @@ class ClientManager:
                  lr_decay_step=20, lr_decay_gamma=0.5, mu=0.01,
                  total_epochs=50, cutmix_alpha=1.0, cutmix_prob=0.8,
                  cutmix_min_ratio=0.1, cutmix_max_ratio=0.8, use_cutmix=True,
-                 mixup_cutmix_ratio=0.5, consistency_beta=5.0, min_lr=1e-5, gamma_sm=1.0):
+                 mixup_cutmix_ratio=0.5, consistency_beta=5.0, min_lr=1e-5, gamma_sm=1.0, gamma_scheduler='static', args=None):
         self.num_clients = num_clients
         self.clients = []
         for i in range(num_clients):
@@ -514,7 +550,9 @@ class ClientManager:
                 mixup_cutmix_ratio=mixup_cutmix_ratio,
                 consistency_beta=consistency_beta,
                 min_lr=min_lr,  # 【新增】传递最小学习率
-                gamma_sm=gamma_sm  # 【新增】传递S1阶段损失权重
+                gamma_sm=gamma_sm,  # 【新增】传递S1阶段损失权重
+                gamma_scheduler=gamma_scheduler,  # 【新增】传递参数
+                args=args  # 【新增】传递完整args参数
             )
             self.clients.append(client)
 

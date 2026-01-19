@@ -182,6 +182,39 @@ class BaselineClient:
         except Exception:
             return 0
 
+    def evaluate_per_class_accuracy(self, num_classes):
+        """评估每个类别的准确率"""
+        self.model.eval()
+        class_correct = torch.zeros(num_classes)
+        class_total = torch.zeros(num_classes)
+        
+        with torch.no_grad():
+            for data, target in self.test_loader:
+                data, target = data.to(self.device, non_blocking=True), target.to(self.device, non_blocking=True)
+                if target.dim() > 1: target = target.squeeze().long()
+                else: target = target.long()
+                
+                output = self.model(data)
+                pred = output.argmax(dim=1)
+                
+                for i in range(len(target)):
+                    label = target[i].item()
+                    if label < num_classes:
+                        class_total[label] += 1
+                        if pred[i] == label:
+                            class_correct[label] += 1
+        
+        # 计算每个类别的准确率
+        per_class_acc = []
+        for i in range(num_classes):
+            if class_total[i] > 0:
+                acc = (class_correct[i] / class_total[i] * 100).item()
+            else:
+                acc = 0.0
+            per_class_acc.append(acc)
+        
+        return per_class_acc
+
 
 class BaselineServer:
     """Basic Server - based on original fedavg code"""

@@ -33,6 +33,9 @@ class MetricsRecorder:
             'clients_train_m2': [],
             'clients_test_sm': [],
             'clients_train_sm': [],
+            # 新增：per-class 准确率
+            'per_class_acc_m2': [],  # M2头的各类别准确率
+            'per_class_acc_sm': [],  # Sm头的各类别准确率
         }
         
         # --- 偶数轮 Even Loss 单独记录 ---
@@ -47,6 +50,8 @@ class MetricsRecorder:
             'train_acc': [],
             'clients_test_acc': [], # 记录每个客户端的精度，用于画方差带
             'clients_train_acc': [],
+            # 新增：per-class 准确率
+            'per_class_acc': [],  # Baseline的各类别准确率
         }
         
         # --- 早停相关 ---
@@ -57,7 +62,8 @@ class MetricsRecorder:
     def add_crossfreeze_record(self, round_idx, comm_cost, 
                              test_loss, loss_s1, loss_s2, hard_samples,
                              w_test_m2, w_train_m2, w_test_sm, w_train_sm,
-                             c_test_m2, c_train_m2, c_test_sm, c_train_sm):
+                             c_test_m2, c_train_m2, c_test_sm, c_train_sm,
+                             per_class_m2=None, per_class_sm=None):
         """CrossFreeze 专用记录接口 (奇数轮)"""
         self.metrics['round'].append(round_idx)
         self.metrics['communication_cost'].append(comm_cost)
@@ -76,6 +82,10 @@ class MetricsRecorder:
         self.cf_metrics['clients_train_m2'].append(c_train_m2)
         self.cf_metrics['clients_test_sm'].append(c_test_sm)
         self.cf_metrics['clients_train_sm'].append(c_train_sm)
+        
+        # 新增：per-class 准确率记录
+        self.cf_metrics['per_class_acc_m2'].append(per_class_m2)
+        self.cf_metrics['per_class_acc_sm'].append(per_class_sm)
 
     def add_even_loss_record(self, round_idx, loss_even):
         """记录偶数轮的 Even Loss"""
@@ -85,7 +95,8 @@ class MetricsRecorder:
     def add_baseline_record(self, round_idx, comm_cost, 
                           test_loss, train_loss,
                           w_test_acc, w_train_acc,
-                          c_test_acc, c_train_acc):
+                          c_test_acc, c_train_acc,
+                          per_class_acc=None):
         """Baseline 专用记录接口"""
         self.metrics['round'].append(round_idx)
         self.metrics['communication_cost'].append(comm_cost)
@@ -96,6 +107,9 @@ class MetricsRecorder:
         self.bl_metrics['train_acc'].append(w_train_acc)
         self.bl_metrics['clients_test_acc'].append(c_test_acc)
         self.bl_metrics['clients_train_acc'].append(c_train_acc)
+        
+        # 新增：per-class 准确率记录
+        self.bl_metrics['per_class_acc'].append(per_class_acc)
     
     def get_best_accuracy(self):
         """获取最佳准确率"""

@@ -270,6 +270,152 @@ def evaluate_clients_detailed(client_manager, test_loader, device):
     return (weighted_avg_test_m2, weighted_avg_train_m2, weighted_avg_test_sm, weighted_avg_train_sm,
             test_accuracies_m2, train_accuracies_m2, test_accuracies_sm, train_accuracies_sm, client_weights)
 
+
+def evaluate_per_class_accuracy(client_manager, num_classes):
+    """
+    评估所有客户端的per-class准确率并计算加权平均
+    
+    Args:
+        client_manager: 客户端管理器
+        num_classes: 类别数量
+        
+    Returns:
+        (avg_per_class_m2, avg_per_class_sm): M2和Sm头的加权平均per-class准确率
+    """
+    all_clients = client_manager.get_all_clients()
+    if not all_clients:
+        return None, None
+    
+    # 收集所有客户端的per-class准确率
+    per_class_m2_list = []
+    per_class_sm_list = []
+    client_weights = []
+    
+    for client in all_clients:
+        # 评估M2头的per-class准确率
+        per_class_m2 = client.evaluate_per_class_accuracy(num_classes, use_sm=False)
+        per_class_sm = client.evaluate_per_class_accuracy(num_classes, use_sm=True)
+        weight = client.get_num_samples()
+        
+        per_class_m2_list.append(per_class_m2)
+        per_class_sm_list.append(per_class_sm)
+        client_weights.append(weight)
+    
+    # 计算加权平均per-class准确率
+    total_weight = sum(client_weights)
+    if total_weight > 0:
+        avg_per_class_m2 = []
+        avg_per_class_sm = []
+        
+        for class_idx in range(num_classes):
+            # M2头的加权平均
+            weighted_sum_m2 = sum(per_class_m2[class_idx] * weight 
+                                  for per_class_m2, weight in zip(per_class_m2_list, client_weights))
+            avg_per_class_m2.append(weighted_sum_m2 / total_weight)
+            
+            # Sm头的加权平均
+            weighted_sum_sm = sum(per_class_sm[class_idx] * weight 
+                                  for per_class_sm, weight in zip(per_class_sm_list, client_weights))
+            avg_per_class_sm.append(weighted_sum_sm / total_weight)
+    else:
+        avg_per_class_m2 = [0.0] * num_classes
+        avg_per_class_sm = [0.0] * num_classes
+    
+    return avg_per_class_m2, avg_per_class_sm
+
+
+def evaluate_baseline_per_class_accuracy(client_manager, num_classes):
+    """
+    评估baseline所有客户端的per-class准确率并计算加权平均
+    
+    Args:
+        client_manager: 客户端管理器
+        num_classes: 类别数量
+        
+    Returns:
+        avg_per_class: 加权平均per-class准确率
+    """
+    all_clients = client_manager.get_all_clients()
+    if not all_clients:
+        return None
+    
+    # 收集所有客户端的per-class准确率
+    per_class_list = []
+    client_weights = []
+    
+    for client in all_clients:
+        per_class_acc = client.evaluate_per_class_accuracy(num_classes)
+        weight = client.get_num_samples()
+        
+        per_class_list.append(per_class_acc)
+        client_weights.append(weight)
+    
+    # 计算加权平均per-class准确率
+    total_weight = sum(client_weights)
+    if total_weight > 0:
+        avg_per_class = []
+        
+        for class_idx in range(num_classes):
+            weighted_sum = sum(per_class[class_idx] * weight 
+                               for per_class, weight in zip(per_class_list, client_weights))
+            avg_per_class.append(weighted_sum / total_weight)
+    else:
+        avg_per_class = [0.0] * num_classes
+    
+    return avg_per_class
+
+
+def print_per_class_accuracy_summary(client_manager, dataset_name, experiment_type="CrossFreeze"):
+    """
+    在测试结束时打印per-class准确率摘要
+    
+    Args:
+        client_manager: 客户端管理器
+        dataset_name: 数据集名称
+        experiment_type: 实验类型 ("CrossFreeze" 或 "Baseline")
+    """
+    dataset_config = get_dataset_config(dataset_name)
+    num_classes = dataset_config['num_classes']
+    class_names = dataset_config.get('class_names', [f'Class {i}' for i in range(num_classes)])
+    
+    print("\n" + "="*80)
+    print(f"{experiment_type} - 各类别测试准确率摘要")
+    print("="*80)
+    
+    if experiment_type == "CrossFreeze":
+        # CrossFreeze: 显示M2和Sm头的结果
+        per_class_m2, per_class_sm = evaluate_per_class_accuracy(client_manager, num_classes)
+        
+        print(f"{'类别':<15} {'M1+M2(个性化)':<18} {'M1+Sm(全局)':<18} {'差值(M2-Sm)':<15}")
+        print("-" * 80)
+        
+        for i, (class_name, acc_m2, acc_sm) in enumerate(zip(class_names, per_class_m2, per_class_sm)):
+            diff = acc_m2 - acc_sm
+            print(f"{class_name:<15} {acc_m2:>15.2f}% {acc_sm:>15.2f}% {diff:>12.2f}%")
+        
+        print("-" * 80)
+        avg_m2 = sum(per_class_m2) / num_classes
+        avg_sm = sum(per_class_sm) / num_classes
+        avg_diff = avg_m2 - avg_sm
+        print(f"{'平均':<15} {avg_m2:>15.2f}% {avg_sm:>15.2f}% {avg_diff:>12.2f}%")
+        
+    elif experiment_type == "Baseline":
+        # Baseline: 只显示一个模型的结果
+        per_class_acc = evaluate_baseline_per_class_accuracy(client_manager, num_classes)
+        
+        print(f"{'类别':<15} {'准确率':<15}")
+        print("-" * 35)
+        
+        for class_name, acc in zip(class_names, per_class_acc):
+            print(f"{class_name:<15} {acc:>12.2f}%")
+        
+        print("-" * 35)
+        avg_acc = sum(per_class_acc) / num_classes
+        print(f"{'平均':<15} {avg_acc:>12.2f}%")
+    
+    print("="*80 + "\n")
+
+
 def run_crossfreeze(args):
     """运行CrossFreeze实验"""
     print("\n" + "="*60)
@@ -333,7 +479,9 @@ def run_crossfreeze(args):
         mixup_cutmix_ratio=args.mixup_cutmix_ratio,
         consistency_beta=args.consistency_beta,  # 【新增】传递参数
         min_lr=args.min_lr,  # 【新增】传递最小学习率参数
-        gamma_sm=args.gamma_sm  # 【新增】传递S1损失权重参数
+        gamma_sm=args.gamma_sm,  # 【新增】传递S1损失权重参数
+        gamma_scheduler=args.gamma_scheduler,  # 【新增】传入命令行参数
+        args=args  # 【新增】传递完整args参数
     )
     
     # 指标记录
@@ -426,6 +574,13 @@ def run_crossfreeze(args):
             
             test_acc, test_loss = evaluate_clients(client_manager, test_loader, args.device)
             
+            # 【修改】只在最后一轮才评估per-class准确率，避免影响训练性能
+            per_class_m2, per_class_sm = None, None
+            if round_idx == args.epochs - 1:  # 最后一轮
+                dataset_config = get_dataset_config(args.dataset)
+                num_classes = dataset_config['num_classes']
+                per_class_m2, per_class_sm = evaluate_per_class_accuracy(client_manager, num_classes)
+            
             # 使用新的 CrossFreeze 记录接口
             metrics.add_crossfreeze_record(
                 round_idx=round_idx,
@@ -441,7 +596,9 @@ def run_crossfreeze(args):
                 c_test_m2=test_accuracies_m2,
                 c_train_m2=train_accuracies_m2,
                 c_test_sm=test_accuracies_sm,
-                c_train_sm=train_accuracies_sm
+                c_train_sm=train_accuracies_sm,
+                per_class_m2=per_class_m2,
+                per_class_sm=per_class_sm
             )
             
             # 早停检查
@@ -502,6 +659,9 @@ def run_crossfreeze(args):
     
     save_dir = os.path.join(args.save_dir, save_name)
     os.makedirs(save_dir, exist_ok=True)
+
+    # 【新增】在训练结束后打印per-class准确率摘要
+    print_per_class_accuracy_summary(client_manager, args.dataset, "CrossFreeze")
     
     metrics.save_to_file(os.path.join(save_dir, 'metrics.json'))
     metrics.print_summary()
@@ -630,6 +790,13 @@ def run_baseline_fedavg(args):
             
             test_acc, test_loss = evaluate_baseline_clients(client_manager, test_loader, args.device)
             
+            # 【修改】只在最后一轮才评估per-class准确率，避免影响训练性能
+            per_class_acc = None
+            if round_idx == args.epochs - 1:  # 最后一轮
+                dataset_config = get_dataset_config(args.dataset)
+                num_classes = dataset_config['num_classes']
+                per_class_acc = evaluate_baseline_per_class_accuracy(client_manager, num_classes)
+            
             # 使用新的 Baseline 记录接口
             metrics.add_baseline_record(
                 round_idx=round_idx,
@@ -639,7 +806,8 @@ def run_baseline_fedavg(args):
                 w_test_acc=weighted_avg_test,
                 w_train_acc=weighted_avg_train,
                 c_test_acc=test_accuracies,
-                c_train_acc=train_accuracies
+                c_train_acc=train_accuracies,
+                per_class_acc=per_class_acc
             )
             
             # 早停检查
@@ -686,6 +854,9 @@ def run_baseline_fedavg(args):
     
     save_dir = os.path.join(args.save_dir, save_name)
     os.makedirs(save_dir, exist_ok=True)
+
+    # 【新增】在训练结束后打印per-class准确率摘要
+    print_per_class_accuracy_summary(client_manager, args.dataset, "Baseline")
     
     metrics.save_to_file(os.path.join(save_dir, 'metrics.json'))
     metrics.print_summary()
