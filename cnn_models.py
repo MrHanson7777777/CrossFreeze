@@ -174,9 +174,11 @@ class CIFARCNNHead(nn.Module):
     """Sm: Linear Head"""
     def __init__(self, num_classes=10):
         super(CIFARCNNHead, self).__init__()
-        self.fc = nn.Linear(512, num_classes, bias=False) 
+        self.dropout = nn.Dropout(0.5)
+        self.fc = nn.Linear(512, num_classes, bias=False)
 
     def forward(self, x):
+        x = self.dropout(x)
         return self.fc(x)
 
 class CIFARCNN(nn.Module):

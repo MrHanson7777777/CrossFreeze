@@ -1,17 +1,13 @@
 """
-服务器实现 (CrossFreeze)
+服务器实现 (CrossFreeze + 原型学习)
 """
 import torch
 import copy
 import numpy as np
-from model_utils import (
-    model_to_params_dict, params_dict_to_model,
-    add_params_dict, subtract_params_dict, zero_params_dict, scale_params_dict
-)
 
 
 class CrossFreezeServer:
-    """CrossFreeze 服务器 (仅聚合Sm)"""
+    """CrossFreeze 服务器 - 支持原型聚合"""
     
     def __init__(self, model, test_loader, device='cpu'):
         """
@@ -23,12 +19,56 @@ class CrossFreezeServer:
         # 服务器持有的 global_model 仅用于存储 Sm_global
         # M1 和 M2 部分不被使用
         self.global_model = copy.deepcopy(model).to(device)
-        self.test_loader = test_loader # 传递给客户端
+        self.test_loader = test_loader  # 传递给客户端
         self.device = device
+        
+        # 存储全局原型
+        self.global_prototypes = {}
         
     def get_global_sm_state_dict(self):
         """获取全局 Sm 模块的状态字典"""
         return self.global_model.sm.state_dict()
+    
+    def get_global_prototypes(self):
+        """获取全局原型"""
+        return self.global_prototypes
+    
+    def aggregate_prototypes(self, client_protos_list, client_counts_list):
+        """
+        聚合客户端上传的原型
+        Args:
+            client_protos_list: List[Dict{label: tensor}]
+            client_counts_list: List[Dict{label: int}]
+        Returns:
+            global_prototypes: Dict{label: tensor}
+        """
+        temp_protos = {}
+        total_counts = {}
+        
+        # 1. 累加
+        for client_idx, protos in enumerate(client_protos_list):
+            counts = client_counts_list[client_idx]
+            
+            for label, proto in protos.items():
+                if label not in temp_protos:
+                    temp_protos[label] = torch.zeros_like(proto).to(self.device)
+                    total_counts[label] = 0
+                
+                # 确保在同一设备
+                proto = proto.to(self.device)
+                count = counts[label]
+                
+                # 加权累加 (Feature * Count)
+                temp_protos[label] += proto * count
+                total_counts[label] += count
+        
+        # 2. 平均
+        for label in temp_protos:
+            if total_counts[label] > 0:
+                temp_protos[label] /= total_counts[label]
+        
+        self.global_prototypes = temp_protos
+        return self.global_prototypes
     
     def aggregate(self, client_sm_state_dicts, client_weights):
         """

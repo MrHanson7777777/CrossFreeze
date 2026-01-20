@@ -15,7 +15,7 @@ try:
     MEDMNIST_AVAILABLE = True
 except ImportError:
     MEDMNIST_AVAILABLE = False
-    print("Warning: medmnist 未安装，PathMNIST 数据集不可用")
+    print("Warning: medmnist 未安装，PathMNIST 数据集将从 npz 文件加载")
 
 # 动态添加根目录到 sys.path
 # 假设 data_loader.py 在 /path/to/project/data/
@@ -82,6 +82,14 @@ def load_dataset(dataset_name, data_dir='./data'):
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
+            
+            # 【新增】颜色抖动：改变亮度、对比度、饱和度
+            # 这能有效防止模型死记硬背像素值
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+            
+            # 【可选】随机灰度化 (小概率)
+            transforms.RandomGrayscale(p=0.1),
+            
             transforms.ToTensor(),
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
         ])
@@ -107,30 +115,56 @@ def load_dataset(dataset_name, data_dir='./data'):
         test_dataset = datasets.CIFAR100(data_dir, train=False, download=True, transform=transform_test)
     
     elif dataset_name.lower() == 'pathmnist':
-        if not MEDMNIST_AVAILABLE:
-            raise ImportError("medmnist 包未安装。请运行: pip install medmnist")
+        # PathMNIST 直接从 npz 文件加载
+        # PathMNIST 是 3 通道 RGB 图像 (28, 28, 3)
         
-        # PathMNIST 配置
-        info = INFO['pathmnist']
-        DataClass = getattr(medmnist, info['python_class'])
-        
-        # 训练集数据增强
+        # 训练集数据增强 - 使用3通道RGB标准化
         transform_train = transforms.Compose([
+            transforms.ToPILImage(),  # 从numpy转PIL
             transforms.RandomRotation(10),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5], std=[0.5])
+            # 使用ImageNet预训练的3通道标准化参数，适合RGB医学影像
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
         # 测试集不做增强
         transform_test = transforms.Compose([
+            transforms.ToPILImage(),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5], std=[0.5])
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
-        # 加载数据集
-        train_dataset = DataClass(split='train', transform=transform_train, download=True, root=data_dir)
-        test_dataset = DataClass(split='test', transform=transform_test, download=True, root=data_dir)
+        # 使用自定义数据集类加载 npz 文件
+        class PathMNISTDataset(torch.utils.data.Dataset):
+            def __init__(self, data_path, split, transform=None):
+                data = np.load(data_path)
+                if split == 'train':
+                    self.images = data['train_images']
+                    self.labels = data['train_labels'].flatten()
+                elif split == 'test':
+                    self.images = data['test_images'] 
+                    self.labels = data['test_labels'].flatten()
+                self.transform = transform
+                
+            def __len__(self):
+                return len(self.images)
+                
+            def __getitem__(self, idx):
+                image = self.images[idx]
+                label = self.labels[idx]
+                
+                if self.transform:
+                    image = self.transform(image)
+                else:
+                    # 默认转换为tensor
+                    image = torch.from_numpy(image).float().permute(2, 0, 1) / 255.0
+                    
+                return image, label
+        
+        data_path = os.path.join(data_dir, 'pathmnist.npz')
+        train_dataset = PathMNISTDataset(data_path, 'train', transform=transform_train)
+        test_dataset = PathMNISTDataset(data_path, 'test', transform=transform_test)
         
         print(f"PathMNIST 加载完成: 训练集 {len(train_dataset)} 张，测试集 {len(test_dataset)} 张")
         

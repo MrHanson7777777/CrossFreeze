@@ -61,10 +61,27 @@ def get_args():
                         help='M1一致性正则化损失的权重 (建议范围 1.0 - 10.0)')
     
     # 【新增】学习率调度器参数
+    parser.add_argument('--lr_scheduler', type=str, default='step',
+                        choices=['step', 'cosine'],
+                        help='学习率调度策略: step(阶梯衰减), cosine(余弦退火)')
+    
     parser.add_argument('--min_lr', type=float, default=1e-5, 
-                        help='CosineAnnealingLR的最小学习率 (CIFAR建议0.002, PathMNIST建议1e-5)')
+                        help='最小学习率 (Step模式下作为下限，Cosine模式下作为终点)')
     parser.add_argument('--gamma_sm', type=float, default=1.0, 
                         help='S1阶段全局损失的权重 (CIFAR建议2.0, PathMNIST建议0.1)')
+    
+    # 【新增】原型学习参数
+    parser.add_argument('--ld', type=float, default=1.0,
+                        help='原型损失权重 (Lambda) - 控制特征与原型中心的约束强度')
+    
+    # 【新增】Gamma调度策略参数
+    parser.add_argument('--gamma_scheduler', type=str, default='static',
+                        choices=['static', 'dynamic'],
+                        help='Gamma权重策略: static(固定), dynamic(动态Warm-up)')
+    
+    # 【新增】分离/交替优化模式参数
+    parser.add_argument('--separate_loss', type=int, default=0,
+                        help='If 1, S1 uses only M2, Even uses only Sm (Alternating Mode)')
     
     # CutMix数据增强参数
     parser.add_argument('--cutmix_alpha', type=float, default=1.0,
@@ -120,28 +137,35 @@ DATASET_CONFIG = {
         'input_channels': 1,
         'image_size': 28,
         'mean': [0.1307],
-        'std': [0.3081]
+        'std': [0.3081],
+        'class_names': [str(i) for i in range(10)]
     },
     'cifar10': {
         'num_classes': 10,
         'input_channels': 3,
         'image_size': 32,
         'mean': [0.4914, 0.4822, 0.4465],
-        'std': [0.2023, 0.1994, 0.2010]
+        'std': [0.2023, 0.1994, 0.2010],
+        'class_names': ['airplane', 'automobile', 'bird', 'cat', 'deer', 
+                       'dog', 'frog', 'horse', 'ship', 'truck']
     },
     'cifar100': {
         'num_classes': 100,
         'input_channels': 3,
         'image_size': 32,
         'mean': [0.5071, 0.4867, 0.4408],
-        'std': [0.2675, 0.2565, 0.2761]
+        'std': [0.2675, 0.2565, 0.2761],
+        'class_names': [f'Class {i}' for i in range(100)]
     },
     'pathmnist': {
         'num_classes': 9,
         'input_channels': 3,
         'image_size': 28,
-        'mean': [0.5],  # MedMNIST 官方推荐的简单归一化
-        'std': [0.5]
+        'mean': [0.5, 0.5, 0.5],
+        'std': [0.5, 0.5, 0.5],
+        'class_names': ['adipose', 'background', 'debris', 'lymphocytes', 
+                       'mucus', 'smooth_muscle', 'normal_colon_mucosa',
+                       'cancer-associated_stroma', 'colorectal_adenocarcinoma_epithelium']
     }
 }
 
